@@ -10,13 +10,14 @@ const MAX_MOLECULES: u8 = 10;
 
 #[derive(Debug)]
 enum Module {
-    StartPosition, Diagnosis, Molecules, Laboratory,
+    StartPosition, Samples, Diagnosis, Molecules, Laboratory,
 }
 
 impl fmt::Display for Module {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Module::StartPosition => write!(f, "START_POS"),
+            Module::Samples => write!(f, "SAMPLES"),
             Module::Diagnosis => write!(f, "DIAGNOSIS"),
             Module::Molecules => write!(f, "MOLECULES"),
             Module::Laboratory => write!(f, "LABORATORY"),
@@ -42,10 +43,11 @@ enum Carrier {
 struct SampleInfo {
     id: u32,
     carried_by: Carrier,
-    rank: u32,
+    rank: u8,
+    diagnosed: bool,
     gain: String,
-    health: u32,
-    cost: [u8; 5],
+    health: i8,
+    cost: [i8; 5],
 }
 
 #[derive(Debug)]
@@ -63,6 +65,7 @@ fn get_player_info() -> PlayerInfo {
     PlayerInfo{
         target: match inputs[0].trim() {
             "START_POS" => Module::StartPosition,
+            "SAMPLES" => Module::Samples,
             "DIAGNOSIS" => Module::Diagnosis,
             "MOLECULES" => Module::Molecules,
             "LABORATORY" => Module::Laboratory,
@@ -91,6 +94,7 @@ fn get_sample_info() -> SampleInfo {
     let mut input_line = String::new();
     io::stdin().read_line(&mut input_line).unwrap();
     let inputs = input_line.split(" ").collect::<Vec<_>>();
+    let health = parse_input!(inputs[4], i8);
     SampleInfo{
         id: parse_input!(inputs[0], u32),
         carried_by: match inputs[1].trim() {
@@ -99,15 +103,16 @@ fn get_sample_info() -> SampleInfo {
             "-1" => Carrier::Cloud,
             _ => panic!(),
         },
-        rank: parse_input!(inputs[2], u32),
+        rank: parse_input!(inputs[2], u8),
         gain: inputs[3].trim().to_string(),
-        health: parse_input!(inputs[4], u32),
+        diagnosed: health != -1,
+        health,
         cost: [
-            parse_input!(inputs[5], u8),
-            parse_input!(inputs[6], u8),
-            parse_input!(inputs[7], u8),
-            parse_input!(inputs[8], u8),
-            parse_input!(inputs[9], u8),
+            parse_input!(inputs[5], i8),
+            parse_input!(inputs[6], i8),
+            parse_input!(inputs[7], i8),
+            parse_input!(inputs[8], i8),
+            parse_input!(inputs[9], i8),
         ],
     }
 }
@@ -166,62 +171,60 @@ impl fmt::Display for Molecule {
 #[derive(Debug)]
 enum PlayerOp {
     GoTo(Module),
+    ConnectRank(u8),
     ConnectSample(u32),
     ConnectMolecule(Molecule),
+    Wait,
 }
 
 impl fmt::Display for PlayerOp {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             PlayerOp::GoTo(m) => write!(f, "GOTO {}", m),
+            PlayerOp::ConnectRank(r) => write!(f, "CONNECT {}", r),
             PlayerOp::ConnectSample(s) => write!(f, "CONNECT {}", s),
             PlayerOp::ConnectMolecule(m) => write!(f, "CONNECT {}", m),
+            PlayerOp::Wait => write!(f, "WAIT"),
         }
     }
 }
 
-fn work_diagnosis(turn_input: &TurnInput) -> PlayerOp {
-    let mut samples = 0;
-    let mut molecules: u8 = turn_input.p1.storage.iter().sum();
+fn work_samples(turn_input: &TurnInput) -> PlayerOp {
+    let mut has_rank2 = false;
+    let mut has_rank1 = false;
     for sample in turn_input.samples.iter() {
         match sample.carried_by {
             Carrier::P1 => {
-                samples += 1;
-                molecules += sample.cost.iter().sum::<u8>();
+                if sample.rank == 1 {
+                    has_rank1 = true;
+                } else if sample.rank == 2 {
+                    has_rank2 = true;
+                }
             },
             _ => continue,
         }
     }
-    if samples >= MAX_SAMPLES || molecules >= MAX_MOLECULES {
-        return PlayerOp::GoTo(Module::Molecules);
+    if !has_rank2 {
+        return PlayerOp::ConnectRank(2);
     }
-    let mut best_sample = None;
+    if !has_rank1 {
+        return PlayerOp::ConnectRank(1);
+    }
+    PlayerOp::GoTo(Module::Diagnosis)
+}
+
+fn work_diagnosis(turn_input: &TurnInput) -> PlayerOp {
     for sample in turn_input.samples.iter() {
         match sample.carried_by {
-            Carrier::Cloud => {
-                let cost: u8 = sample.cost.iter().sum();
-                if cost + molecules > MAX_MOLECULES {
-                    continue;
-                }
-                match best_sample {
-                    None => best_sample = Some(sample),
-                    Some(best) => {
-                        let best_cost: u8 = best.cost.iter().sum();
-                        if sample.health * best_cost as u32 > best.health * cost as u32 {
-                            best_sample = Some(sample)
-                        }
-                    },
+            Carrier::P1 => {
+                if !sample.diagnosed {
+                    return PlayerOp::ConnectSample(sample.id);
                 }
             },
-            _ => {
-                continue;
-            },
+            _ => continue,
         }
     }
-    match best_sample {
-        Some(sample) => PlayerOp::ConnectSample(sample.id),
-        None => PlayerOp::GoTo(Module::Molecules),
-    }
+    PlayerOp::GoTo(Module::Molecules)
 }
 
 fn work_molecules(turn_input: &TurnInput) -> PlayerOp {
@@ -233,8 +236,17 @@ fn work_molecules(turn_input: &TurnInput) -> PlayerOp {
             }
         }
     }
+    if requires.iter().sum::<i8>() as u8 > MAX_MOLECULES {
+        for sample in turn_input.samples.iter() {
+            if sample.carried_by == Carrier::P1 && sample.rank == 2 {
+                for i in 0..5 {
+                    requires[i] = sample.cost[i];
+                }
+            }
+        }
+    }
     for i in 0..5 {
-        if turn_input.p1.storage[i] < requires[i] {
+        if turn_input.p1.storage[i] < requires[i] as u8 {
             return PlayerOp::ConnectMolecule(Molecule::from(i as u8));
         }
     }
@@ -244,15 +256,18 @@ fn work_molecules(turn_input: &TurnInput) -> PlayerOp {
 fn work_laboratory(turn_input: &TurnInput) -> PlayerOp {
     for sample in turn_input.samples.iter() {
         if sample.carried_by == Carrier::P1 {
-            return PlayerOp::ConnectSample(sample.id);
+            if sample.rank == 2 || sample.cost.iter().sum::<i8>() as u8 == turn_input.p1.storage.iter().sum::<u8>() {
+                return PlayerOp::ConnectSample(sample.id);
+            }
         }
     }
-    PlayerOp::GoTo(Module::Diagnosis)
+    PlayerOp::GoTo(Module::Samples)
 }
 
 fn next_move(turn_input: &TurnInput) -> PlayerOp {
     match turn_input.p1.target {
-        Module::StartPosition => PlayerOp::GoTo(Module::Diagnosis),
+        Module::StartPosition => PlayerOp::GoTo(Module::Samples),
+        Module::Samples => work_samples(turn_input),
         Module::Diagnosis => work_diagnosis(turn_input),
         Module::Molecules => work_molecules(turn_input),
         Module::Laboratory => work_laboratory(turn_input),
