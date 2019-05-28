@@ -1,0 +1,7 @@
+[package]
+name = "code4life"
+version = "0.1.0"
+authors = ["'Jason King' <'chn.kei@gmail.com'>"]
+edition = "2018"
+
+[dependencies]
